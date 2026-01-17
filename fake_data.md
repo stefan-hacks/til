@@ -1,4 +1,3 @@
-```markdown
 # John's Profile
 
 ## Personal Information
@@ -81,4 +80,3 @@
 **Flag:** `CTF{Pr0f1l3_1ntru5i0n_Ac3}`
 
 *Use this information responsibly and only within the confines of the designated lab environment.*
-```
