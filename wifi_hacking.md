@@ -282,36 +282,6 @@ Purpose: "Got it, let's start talking securely"
 
 ---
 
-## **The Mathematics Behind It (Simplified)**
-
-### **Key Derivations:**
-
-1. **PMK Generation** (Before handshake):
-   ```
-   PMK = PBKDF2(SHA1, Password, SSID, 4096, 256)
-   ```
-   - 4096 iterations of hashing (why cracking is slow)
-   - Salt = SSID (why same password on different SSIDs gives different PMK)
-
-2. **PTK Generation** (During handshake):
-   ```
-   PTK = PRF-HMAC-SHA1(PMK, "Pairwise key expansion",
-                        Min(AP_MAC, Client_MAC) + 
-                        Max(AP_MAC, Client_MAC) +
-                        Min(ANonce, SNonce) + 
-                        Max(ANonce, SNonce))
-   ```
-   - 384-bit key (128 for encryption, 128 for integrity, 128 for EAPOL)
-   - Unique for each session
-
-3. **MIC Calculation** (The "proof"):
-   ```
-   MIC = HMAC-SHA1(PTK[0:16], EAPOL message)
-   ```
-   - This is what we verify when cracking
-
----
-
 ## **Why This Makes WPA2 Crackable**
 
 ### **The Critical Flaw:**
